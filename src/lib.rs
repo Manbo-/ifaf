@@ -124,7 +124,7 @@ unsafe fn read_input(
         return Ok(copy);
     }
     let path = path.ok_or_else(|| "missing input path".to_string())?;
-    if !extension_is_af(&path) {
+    if !extension_is_supported(&path) {
         return Err("unsupported file extension".into());
     }
     let offset = usize::try_from(len).map_err(|_| "invalid file offset".to_string())? as u64;
@@ -295,15 +295,17 @@ unsafe fn wide_path(path: *const u16) -> Option<PathBuf> {
     Some(PathBuf::from(std::ffi::OsString::from_wide(wide)))
 }
 
-fn extension_is_af(path: &std::path::Path) -> bool {
+fn extension_is_supported(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("af"))
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("af") || extension.eq_ignore_ascii_case("afphoto")
+        })
 }
 
 unsafe fn supported(header: *const c_void, path: Option<PathBuf>) -> bool {
     let Some(path) = path else { return false };
-    if !extension_is_af(&path) || header.is_null() {
+    if !extension_is_supported(&path) || header.is_null() {
         return false;
     }
     let bytes = std::slice::from_raw_parts(header.cast::<u8>(), 4);
@@ -313,9 +315,11 @@ unsafe fn supported(header: *const c_void, path: Option<PathBuf>) -> bool {
 fn plugin_info(infono: c_int) -> Option<&'static [u8]> {
     match infono {
         0 => Some(b"00IN\0"),
-        1 => Some(b"Affinity .af preview (Rust)\0"),
+        1 => Some(b"Affinity preview (Rust)\0"),
         2 => Some(b"*.af\0"),
-        3 => Some(b"Affinity .af image\0"),
+        3 => Some(b"Affinity image\0"),
+        4 => Some(b"*.afphoto\0"),
+        5 => Some(b"Affinity Photo image\0"),
         _ => None,
     }
 }
@@ -401,7 +405,7 @@ unsafe fn picture_info(
         return 8;
     }
     if flag & 0x7 > INPUT_MEMORY
-        || (flag & 0x7 == 0 && !path.as_deref().is_some_and(extension_is_af))
+        || (flag & 0x7 == 0 && !path.as_deref().is_some_and(extension_is_supported))
     {
         return 2;
     }
@@ -493,7 +497,7 @@ unsafe fn picture(
     *out_info = ptr::null_mut();
     *out_bits = ptr::null_mut();
     if flag & 0x7 > INPUT_MEMORY
-        || (flag & 0x7 == 0 && !path.as_deref().is_some_and(extension_is_af))
+        || (flag & 0x7 == 0 && !path.as_deref().is_some_and(extension_is_supported))
     {
         return 2;
     }
@@ -673,11 +677,18 @@ mod tests {
     }
 
     #[test]
-    fn accepts_only_the_af_extension() {
-        assert!(extension_is_af(std::path::Path::new("design.af")));
-        assert!(extension_is_af(std::path::Path::new("DESIGN.AF")));
-        assert!(!extension_is_af(std::path::Path::new("design.afphoto")));
-        assert!(!extension_is_af(std::path::Path::new("design.png")));
+    fn accepts_af_and_afphoto_extensions() {
+        assert!(extension_is_supported(std::path::Path::new("design.af")));
+        assert!(extension_is_supported(std::path::Path::new("DESIGN.AF")));
+        assert!(extension_is_supported(std::path::Path::new("photo.afphoto")));
+        assert!(extension_is_supported(std::path::Path::new("PHOTO.AFPHOTO")));
+        assert!(!extension_is_supported(std::path::Path::new("design.png")));
+    }
+
+    #[test]
+    fn advertises_afphoto_as_a_separate_susie_format() {
+        assert_eq!(plugin_info(2), Some(&b"*.af\0"[..]));
+        assert_eq!(plugin_info(4), Some(&b"*.afphoto\0"[..]));
     }
 
     #[test]
